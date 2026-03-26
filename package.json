@@ -1,0 +1,20 @@
+{
+  "name": "stratis",
+  "version": "1.0.0",
+  "description": "Stratis Discord bot for Roblox intelligence",
+  "main": "src/sharder.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/sharder.js",
+    "start:single": "node src/index.js",
+    "deploy:commands": "node scripts/deploy-commands.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.4.5",
+    "mongoose": "^8.13.2"
+  }
+}
