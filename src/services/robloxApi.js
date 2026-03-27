@@ -418,6 +418,57 @@ async function getAssetInfo(assetId) {
   return response.json();
 }
 
+function extractTemplateAssetId(text) {
+  const raw = String(text || "");
+  const patterns = [
+    /asset\/\?id=(\d+)/i,
+    /assetId=(\d+)/i,
+    /rbxassetid:\/\/(\d+)/i
+  ];
+  for (const p of patterns) {
+    const m = raw.match(p);
+    if (m?.[1]) return Number(m[1]);
+  }
+  return null;
+}
+
+async function getClassicClothingTemplateId(clothingAssetId) {
+  const id = Number(clothingAssetId);
+  if (!Number.isFinite(id)) return null;
+
+  const endpoints = [
+    `https://assetdelivery.roblox.com/v1/asset/?id=${id}`,
+    `https://www.roblox.com/asset/?id=${id}`
+  ];
+
+  for (const url of endpoints) {
+    const response = await robloxFetch(url).catch(() => null);
+    if (!response?.ok) continue;
+    const arr = await response.arrayBuffer().catch(() => null);
+    if (!arr) continue;
+    const text = Buffer.from(arr).toString("utf8");
+    const templateId = extractTemplateAssetId(text);
+    if (templateId) return templateId;
+  }
+  return null;
+}
+
+async function getAssetImageBuffer(assetId) {
+  const id = Number(assetId);
+  if (!Number.isFinite(id)) return null;
+
+  // For classic template images, use asset delivery directly.
+  // Thumbnail fallback is intentionally avoided to prevent generic placeholder icons.
+  const direct = await robloxFetch(`https://assetdelivery.roblox.com/v1/asset/?id=${id}`).catch(() => null);
+  if (!direct?.ok) return null;
+  const contentType = String(direct.headers.get("content-type") || "").toLowerCase();
+  if (!contentType.startsWith("image/")) return null;
+  const ext = contentType.includes("png") ? "png" : contentType.includes("jpeg") ? "jpg" : "png";
+  const arr = await direct.arrayBuffer().catch(() => null);
+  if (!arr) return null;
+  return { buffer: Buffer.from(arr), extension: ext };
+}
+
 async function getAssetThumbnail(assetId) {
   const response = await robloxFetch(
     `https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png&isCircular=false`
@@ -517,6 +568,8 @@ module.exports = {
   getGroupBanner,
   getGameVotes,
   getGameIcon,
+  getClassicClothingTemplateId,
+  getAssetImageBuffer,
   searchCatalogItemsByKeyword,
   getRolimonsItemDetails,
   getRolimonsValueForAsset

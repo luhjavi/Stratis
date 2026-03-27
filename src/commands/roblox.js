@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, MessageFlags } = require("discord.js");
+const { SlashCommandBuilder, MessageFlags, AttachmentBuilder } = require("discord.js");
 const { baseEmbed } = require("../constants/embed");
 const { canRunSearch } = require("../utils/cooldown");
 const RequestStat = require("../database/models/RequestStat");
@@ -206,6 +206,12 @@ module.exports = {
         .setName("assetinfo")
         .setDescription("Get Roblox asset information")
         .addStringOption((opt) => opt.setName("id").setDescription("Asset ID").setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("template")
+        .setDescription("Get classic clothing template image by clothing asset ID")
+        .addStringOption((opt) => opt.setName("clothingid").setDescription("Classic clothing asset ID").setRequired(true))
     )
     .addSubcommand((sub) =>
       sub
@@ -475,6 +481,45 @@ module.exports = {
             )
         ]
       });
+    }
+
+    if (sub === "template") {
+      await interaction.deferReply();
+      const clothingId = interaction.options.getString("clothingid", true).trim();
+      if (!/^\d+$/.test(clothingId)) {
+        return interaction.editReply({ content: "Please provide a valid numeric clothing asset ID." });
+      }
+
+      const asset = await robloxApi.getAssetInfo(clothingId);
+      if (!asset) {
+        return interaction.editReply({ content: "Could not find that clothing asset." });
+      }
+
+      const typeId = Number(asset.AssetTypeId ?? asset.assetTypeId);
+      if (![2, 11, 12].includes(typeId)) {
+        return interaction.editReply({
+          content: "That asset is not classic clothing. Use a classic T-Shirt, Shirt, or Pants asset ID."
+        });
+      }
+
+      const templateId = await robloxApi.getClassicClothingTemplateId(clothingId);
+      if (!templateId) {
+        return interaction.editReply({ content: "Could not resolve a template image for that clothing asset." });
+      }
+
+      const image = await robloxApi.getAssetImageBuffer(templateId);
+      if (!image?.buffer) {
+        return interaction.editReply({
+          content:
+            "Template image could not be fetched from Roblox asset delivery. Make sure your ROBLOX_COOKIE is valid and has access."
+        });
+      }
+
+      const file = new AttachmentBuilder(image.buffer, {
+        name: `template-${templateId}.${image.extension || "png"}`
+      });
+      await incrementRequests();
+      return interaction.editReply({ content: "", files: [file] });
     }
 
     if (sub === "iteminfo") {

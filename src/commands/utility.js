@@ -16,7 +16,15 @@ module.exports = {
     .setDescription("Utility commands")
     .addSubcommand((sub) => sub.setName("ping").setDescription("Check bot latency"))
     .addSubcommand((sub) => sub.setName("shard").setDescription("Get shard and cluster info"))
-    .addSubcommand((sub) => sub.setName("invitebot").setDescription("Get bot invite URL")),
+    .addSubcommand((sub) => sub.setName("invitebot").setDescription("Get bot invite URL"))
+    .addSubcommand((sub) =>
+      sub
+        .setName("avatar")
+        .setDescription("Get a user's avatar")
+        .addStringOption((opt) =>
+          opt.setName("snowflake").setDescription("Discord user ID (optional; defaults to yourself)").setRequired(false)
+        )
+    ),
 
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
@@ -110,6 +118,23 @@ module.exports = {
       return interaction.reply({
         embeds: [baseEmbed().setTitle("Invite Stratis").setDescription(`[Click here to invite the bot](${link})`)],
         flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (sub === "avatar") {
+      const id = interaction.options.getString("snowflake")?.trim();
+      const user = id
+        ? await interaction.client.users.fetch(id).catch(() => null)
+        : interaction.user;
+      if (!user) {
+        return interaction.reply({
+          embeds: [baseEmbed().setTitle("Not found").setDescription("Could not find a user with that snowflake.")],
+          flags: MessageFlags.Ephemeral
+        });
+      }
+      const png = user.displayAvatarURL({ size: 1024, extension: "png" });
+      return interaction.reply({
+        embeds: [baseEmbed().setTitle(`${user.username}'s Avatar`).setURL(png).setImage(png)]
       });
     }
   }

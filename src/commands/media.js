@@ -2,16 +2,36 @@ const { SlashCommandBuilder, AttachmentBuilder } = require("discord.js");
 const sharp = require("sharp");
 const { baseEmbed } = require("../constants/embed");
 
+const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+const ALLOWED_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/gif"
+]);
+
 async function fetchAttachmentBuffer(attachment) {
   if (!attachment?.url) throw new Error("Missing image attachment.");
   const contentType = String(attachment.contentType || "").toLowerCase();
-  if (contentType && !contentType.startsWith("image/")) {
+  if (contentType && !ALLOWED_MIME_TYPES.has(contentType)) {
     throw new Error("Attachment must be an image.");
+  }
+  if (Number(attachment.size || 0) > MAX_UPLOAD_BYTES) {
+    throw new Error("Image is too large. Max upload size is 12 MB.");
   }
   const res = await fetch(attachment.url);
   if (!res.ok) throw new Error("Could not download attachment.");
+  const len = Number(res.headers.get("content-length") || 0);
+  if (len && len > MAX_UPLOAD_BYTES) {
+    throw new Error("Image is too large. Max upload size is 12 MB.");
+  }
   const arr = await res.arrayBuffer();
-  return Buffer.from(arr);
+  const out = Buffer.from(arr);
+  if (out.length > MAX_UPLOAD_BYTES) {
+    throw new Error("Image is too large. Max upload size is 12 MB.");
+  }
+  return out;
 }
 
 function fileBaseName(name, fallback) {

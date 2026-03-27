@@ -3,6 +3,9 @@ const { commands } = require("../commands");
 const { baseEmbed } = require("../constants/embed");
 const { handleAutocomplete } = require("./autocomplete");
 const { handleComponent } = require("./robloxUserSession");
+const authCommand = require("../commands/auth");
+const config = require("../config");
+const { isUserBanned, isServerBanned } = require("../services/banService");
 
 const commandMap = new Map(commands.map((cmd) => [cmd.data.name, cmd]));
 
@@ -10,6 +13,8 @@ async function handleInteraction(interaction) {
   if (interaction.isMessageComponent()) {
     const handled = await handleComponent(interaction).catch(() => false);
     if (handled) return;
+    const authHandled = await authCommand.handleComponent?.(interaction).catch(() => false);
+    if (authHandled) return;
   }
 
   if (interaction.isAutocomplete()) {
@@ -29,6 +34,16 @@ async function handleInteraction(interaction) {
 
   const command = commandMap.get(interaction.commandName);
   if (!command) return;
+
+  const userBanned = await isUserBanned(interaction.user?.id);
+  const serverBanned = await isServerBanned(interaction.guildId);
+  if (userBanned || serverBanned) {
+    const msg = userBanned ? config.bot.userBanMessage : config.bot.serverBanMessage;
+    return interaction.reply({
+      embeds: [baseEmbed().setTitle("Access denied").setDescription(msg)],
+      flags: MessageFlags.Ephemeral
+    });
+  }
 
   try {
     await command.execute(interaction);
