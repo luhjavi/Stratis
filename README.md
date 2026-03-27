@@ -1,25 +1,37 @@
 # Stratis
 Replacement Bot for axotl#0066, now stratis#0066
-## Features included now
 
-- Slash commands with category roots:
-  - `/roblox userfromroblox <query>`
-  - `/roblox status`
-  - `/roblox groupinfo <query>`
-  - `/roblox gameinfo <query>`
-  - `/roblox assetinfo <id>`
-  - `/utility ping`
-  - `/utility shard`
-  - `/utility invitebot`
-- 15-second user cooldown for Roblox search commands.
-- Minimal dark embed style.
-- Presence rotation: servers, users, total handled requests.
-- MongoDB persistence for request count.
-- Sharding manager support for scale.
-- Optional Bloxlink API integration for Discord -> Roblox linking.
-- Interactive user result panel with view switcher and navigation controls.
-- Panel auto-disables after 30 seconds of idle time.
-- Profile cache with TTL and fast avatar thumbnail refresh caching.
+## Commands
+
+### Roblox
+
+| Command | Parameters | Description |
+| --- | --- | --- |
+| `/roblox userfromroblox` | `query` (username or user ID) | Fetch a full interactive Roblox user profile with multiple views. |
+| `/roblox status` | None | Show Roblox platform status grouped by service area. |
+| `/roblox groupinfo` | `query` (group name or ID) | Show Roblox group info with icon and linked owner. |
+| `/roblox gameinfo` | `query` (game name or universe ID) | Show game details (visits, favorites, ratio, server size, dates, creator). |
+| `/roblox assetinfo` | `id` (asset ID) | Show marketplace-focused asset details with thumbnail and creator link. |
+| `/roblox iteminfo` | `query` (item name or item ID) | Lookup marketplace items (UGC/clothing/accessories/etc.) with trade, price, RAP/value when available. |
+
+### Utility
+
+| Command | Parameters | Description |
+| --- | --- | --- |
+| `/utility ping` | None | Show API, gateway, shard, database latency, uptime, and memory. |
+| `/utility shard` | None | Show shard ID, shard count, and guild count for this shard. |
+| `/utility invitebot` | None | Return the bot invite link with configured permissions. |
+
+### Media
+
+| Command | Parameters | Description |
+| --- | --- | --- |
+| `/media overlay` | `image1`, `image2`, `opacity` (optional, default `50`) | Overlay two images together using selected opacity on the top image. |
+| `/media caption` | `image`, `caption` | Add a caption strip to an image. |
+| `/media imagetogif` | `image` | Convert an image to GIF format. |
+| `/media invert` | `image` | Invert image colors. |
+| `/media monochrome` | `image` | Convert image to black-and-white (grayscale). |
+| `/media resize` | `image`, `percentage` | Resize an image by a percentage scale (1-500). |
 
 ## Setup
 
