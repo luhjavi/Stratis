@@ -418,6 +418,76 @@ async function getAssetInfo(assetId) {
   return response.json();
 }
 
+async function getAssetThumbnail(assetId) {
+  const response = await robloxFetch(
+    `https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png&isCircular=false`
+  );
+  if (!response.ok) return null;
+  const json = await response.json();
+  return json?.data?.[0]?.imageUrl || null;
+}
+
+async function getGroupIcon(groupId) {
+  const response = await robloxFetch(
+    `https://thumbnails.roblox.com/v1/groups/icons?groupIds=${groupId}&size=420x420&format=Png&isCircular=false`
+  );
+  if (!response.ok) return null;
+  const json = await response.json();
+  return json?.data?.[0]?.imageUrl || null;
+}
+
+async function getGroupBanner(groupId) {
+  // Roblox does not expose a stable public banner endpoint for groups.
+  // Keep this as null until an official public endpoint becomes available.
+  void groupId;
+  return null;
+}
+
+async function getGameVotes(universeId) {
+  const response = await robloxFetch(`https://games.roblox.com/v1/games/votes?universeIds=${universeId}`);
+  if (!response.ok) return null;
+  const json = await response.json();
+  return json?.data?.[0] || null;
+}
+
+async function getGameIcon(universeId) {
+  const response = await robloxFetch(
+    `https://thumbnails.roblox.com/v1/games/icons?universeIds=${universeId}&size=512x512&format=Png&isCircular=false`
+  );
+  if (!response.ok) return null;
+  const json = await response.json();
+  return json?.data?.[0]?.imageUrl || null;
+}
+
+async function searchCatalogItemsByKeyword(keyword, limit = 10) {
+  if (!keyword?.trim()) return [];
+  const response = await robloxFetch(
+    `https://catalog.roblox.com/v1/search/items/details?Keyword=${encodeURIComponent(
+      keyword.trim()
+    )}&Category=All&Limit=${limit}&SortType=3`
+  );
+  if (!response.ok) return [];
+  const json = await response.json();
+  return json?.data || [];
+}
+
+async function getRolimonsItemDetails() {
+  const response = await fetch("https://www.rolimons.com/itemapi/itemdetails");
+  if (!response.ok) return null;
+  return response.json();
+}
+
+function getRolimonsValueForAsset(itemApiPayload, assetId) {
+  const entry = itemApiPayload?.items?.[String(assetId)];
+  if (!entry) return null;
+  return {
+    rap: Number.isFinite(Number(entry[2])) && Number(entry[2]) >= 0 ? Number(entry[2]) : null,
+    value: Number.isFinite(Number(entry[3])) && Number(entry[3]) >= 0 ? Number(entry[3]) : null,
+    demand: entry[4] ?? null,
+    trend: entry[5] ?? null
+  };
+}
+
 module.exports = {
   resolveUser,
   searchUsersAutocomplete,
@@ -441,5 +511,13 @@ module.exports = {
   getRobloxStatus,
   resolveGroup,
   resolveGame,
-  getAssetInfo
+  getAssetInfo,
+  getAssetThumbnail,
+  getGroupIcon,
+  getGroupBanner,
+  getGameVotes,
+  getGameIcon,
+  searchCatalogItemsByKeyword,
+  getRolimonsItemDetails,
+  getRolimonsValueForAsset
 };

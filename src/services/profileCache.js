@@ -1,9 +1,11 @@
 const CachedPayload = require("../database/models/CachedPayload");
 const mongoose = require("mongoose");
 const CACHE_VERSION = "v3";
+const MAX_CACHE_TTL_MS = 3 * 60 * 60 * 1000; // hard cap: 3 hours
 
 const PROFILE_TTL_MS = 2 * 60 * 1000;
 const AVATAR_TTL_MS = 20 * 1000;
+const COMMAND_TTL_MS = 3 * 60 * 1000;
 
 const mem = new Map();
 
@@ -33,8 +35,9 @@ async function getByKey(key) {
 }
 
 async function setByKey(key, payload, ttlMs) {
-  const expiresAt = new Date(Date.now() + ttlMs);
-  memSet(key, payload, ttlMs);
+  const effectiveTtlMs = Math.max(1000, Math.min(Number(ttlMs) || 0, MAX_CACHE_TTL_MS));
+  const expiresAt = new Date(Date.now() + effectiveTtlMs);
+  memSet(key, payload, effectiveTtlMs);
   if (mongoose.connection.readyState !== 1) return;
   await CachedPayload.findOneAndUpdate(
     { key },
@@ -59,4 +62,12 @@ async function setAvatar(userId, value) {
   return setByKey(`${CACHE_VERSION}:avatar:${String(userId)}`, value, AVATAR_TTL_MS);
 }
 
-module.exports = { getProfile, setProfile, getAvatar, setAvatar };
+async function getCommandCache(key) {
+  return getByKey(`${CACHE_VERSION}:cmd:${String(key)}`);
+}
+
+async function setCommandCache(key, value, ttlMs = COMMAND_TTL_MS) {
+  return setByKey(`${CACHE_VERSION}:cmd:${String(key)}`, value, ttlMs);
+}
+
+module.exports = { getProfile, setProfile, getAvatar, setAvatar, getCommandCache, setCommandCache };

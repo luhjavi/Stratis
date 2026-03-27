@@ -6,6 +6,7 @@ const robloxApi = require("../services/robloxApi");
 const robloxAggregator = require("../services/robloxAggregator");
 const { startSession } = require("../interactions/robloxUserSession");
 const { formatCompactNumber } = require("../utils/numberFormat");
+const { getCommandCache, setCommandCache } = require("../services/profileCache");
 
 async function incrementRequests() {
   try {
@@ -103,6 +104,74 @@ function categoriesFromFlatComponents(components) {
   return [...map.entries()].map(([name, items]) => ({ name, items }));
 }
 
+const MARKETPLACE_ALLOWED_ASSET_TYPES = new Set([
+  2, // T-Shirt
+  8, // Hat
+  11, // Shirt
+  12, // Pants
+  17, // Head
+  18, // Face
+  19, // Gear
+  24, // Animation
+  41, // Hair Accessory
+  42, // Face Accessory
+  43, // Neck Accessory
+  44, // Shoulder Accessory
+  45, // Front Accessory
+  46, // Back Accessory
+  47, // Waist Accessory
+  61, // Emote
+  64, // Dynamic Head
+  65, // Eyebrow Accessory
+  66, // Eyelash Accessory
+  67, // Mood Animation
+  68, // Dynamic Face
+  69, // Ear Accessory
+  70 // Misc wearable types
+]);
+
+function toIsoTimestamp(value) {
+  const t = Date.parse(String(value || ""));
+  if (!Number.isFinite(t)) return String(value || "Unknown");
+  return new Date(t).toISOString().slice(0, 19) + "Z";
+}
+
+function cacheAuthorText(source, fromCache, fetchedAt) {
+  void fetchedAt;
+  return `Source: ${source} | Cache: ${fromCache ? "Cached" : "Live Fetch"}`;
+}
+
+function assetCreatorLabel(asset) {
+  const creator = asset?.Creator || asset?.creator;
+  if (!creator) return "Unknown";
+  const name = creator.Name || creator.name || "Unknown";
+  const type = creator.CreatorType || creator.creatorType || "User";
+  const targetId = creator.CreatorTargetId || creator.creatorTargetId || creator.Id || creator.id;
+  if (!targetId) return name;
+  if (String(type).toLowerCase() === "group") {
+    return `[${name}](https://www.roblox.com/groups/${targetId})`;
+  }
+  return `[${name}](https://www.roblox.com/users/${targetId}/profile)`;
+}
+
+function gameCreatorLabel(game) {
+  const creator = game?.creator;
+  if (!creator) return "Unknown";
+  const name = creator.name || "Unknown";
+  const id = creator.id;
+  if (!id) return name;
+  if (String(creator.type).toLowerCase() === "group") {
+    return `[${name}](https://www.roblox.com/groups/${id})`;
+  }
+  return `[${name}](https://www.roblox.com/users/${id}/profile)`;
+}
+
+function isMarketplaceAsset(asset) {
+  const typeId = Number(asset?.AssetTypeId ?? asset?.assetTypeId ?? asset?.assetType);
+  if (!Number.isFinite(typeId)) return false;
+  return MARKETPLACE_ALLOWED_ASSET_TYPES.has(typeId);
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("roblox")
@@ -137,6 +206,12 @@ module.exports = {
         .setName("assetinfo")
         .setDescription("Get Roblox asset information")
         .addStringOption((opt) => opt.setName("id").setDescription("Asset ID").setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("iteminfo")
+        .setDescription("Get Roblox marketplace item information by name or ID")
+        .addStringOption((opt) => opt.setName("query").setDescription("Item name or item ID").setRequired(true))
     ),
 
   async execute(interaction) {
@@ -224,12 +299,40 @@ module.exports = {
     if (sub === "groupinfo") {
       await interaction.deferReply();
       const query = interaction.options.getString("query", true);
-      const group = await robloxApi.resolveGroup(query);
+      const cacheKey = `groupinfo:${query.trim().toLowerCase()}`;
+      let cached = await getCommandCache(cacheKey);
+      let fromCache = Boolean(cached);
+      if (!cached) {
+        const group = await robloxApi.resolveGroup(query);
+        if (!group) {
+          return interaction.editReply({
+            embeds: [baseEmbed().setTitle("Not found").setDescription("Group was not found.")]
+          });
+        }
+        const [iconUrl, bannerUrl] = await Promise.all([
+          robloxApi.getGroupIcon(group.id),
+          robloxApi.getGroupBanner(group.id)
+        ]);
+        cached = {
+          source: "Roblox APIs",
+          fetchedAt: Date.now(),
+          group,
+          iconUrl,
+          bannerUrl
+        };
+        await setCommandCache(cacheKey, cached, 5 * 60 * 1000);
+      }
+
+      const group = cached.group;
       if (!group) {
         return interaction.editReply({
           embeds: [baseEmbed().setTitle("Not found").setDescription("Group was not found.")]
         });
       }
+
+      const owner = group.owner?.userId
+        ? `[${group.owner?.username || "Unknown"}](https://www.roblox.com/users/${group.owner.userId}/profile)`
+        : (group.owner?.username || "Unknown");
 
       await incrementRequests();
       return interaction.editReply({
@@ -238,10 +341,14 @@ module.exports = {
             .setTitle(group.name)
             .setURL(`https://www.roblox.com/groups/${group.id}`)
             .setDescription(group.description || "No description.")
+            .setFooter({ text: cacheAuthorText(cached.source || "Roblox APIs", fromCache, cached.fetchedAt) })
+            .setThumbnail(cached.iconUrl || null)
+            .setImage(cached.bannerUrl || null)
             .addFields(
               { name: "Group ID", value: String(group.id), inline: true },
-              { name: "Owner", value: group.owner?.username || "Unknown", inline: true },
-              { name: "Members", value: formatCompactNumber(group.memberCount || 0), inline: true }
+              { name: "Owner", value: owner, inline: true },
+              { name: "Members", value: formatCompactNumber(group.memberCount || 0), inline: true },
+              { name: "Created", value: toIsoTimestamp(group.created), inline: true }
             )
         ]
       });
@@ -259,6 +366,24 @@ module.exports = {
 
       const title = game.name || game.title || "Unknown";
       const universeId = game.id || game.universeId;
+      const [votes, iconUrl, placeDetails] = await Promise.all([
+        universeId ? robloxApi.getGameVotes(universeId) : Promise.resolve(null),
+        universeId ? robloxApi.getGameIcon(universeId) : Promise.resolve(null),
+        game.rootPlaceId ? robloxApi.getPlaceDetails([game.rootPlaceId]).catch(() => []) : Promise.resolve([])
+      ]);
+      const place = placeDetails?.[0] || null;
+      const up = Number(votes?.upVotes || 0);
+      const down = Number(votes?.downVotes || 0);
+      const totalVotes = up + down;
+      const likeRatio = totalVotes > 0 ? `${((up / totalVotes) * 100).toFixed(1)}%` : "Unknown";
+      const supportedDevices = Array.isArray(place?.supportedDevices)
+        ? place.supportedDevices.join(", ")
+        : (Array.isArray(game?.supportedDevices) ? game.supportedDevices.join(", ") : "Not publicly exposed");
+      const vcSupport =
+        typeof place?.voiceChatEnabled === "boolean"
+          ? (place.voiceChatEnabled ? "Yes" : "No")
+          : (typeof game?.voiceChatEnabled === "boolean" ? (game.voiceChatEnabled ? "Yes" : "No") : "Unknown");
+
       await incrementRequests();
       return interaction.editReply({
         embeds: [
@@ -266,10 +391,19 @@ module.exports = {
             .setTitle(title)
             .setURL(universeId ? `https://www.roblox.com/games/${universeId}` : "https://www.roblox.com/discover")
             .setDescription(game.description || "No description available.")
+            .setThumbnail(iconUrl || null)
             .addFields(
               { name: "Universe ID", value: String(universeId || "Unknown"), inline: true },
-              { name: "Creator", value: game.creatorName || game.creator?.name || "Unknown", inline: true },
-              { name: "Visits", value: formatCompactNumber(game.visits || game.placeVisits || 0), inline: true }
+              { name: "Creator", value: gameCreatorLabel(game), inline: true },
+              { name: "Visits", value: formatCompactNumber(game.visits || game.placeVisits || 0), inline: true },
+              { name: "Favorites", value: formatCompactNumber(game.favoritedCount || 0), inline: true },
+              { name: "Likes / Dislikes", value: `${formatCompactNumber(up)} / ${formatCompactNumber(down)}`, inline: true },
+              { name: "Like Ratio", value: likeRatio, inline: true },
+              { name: "VC Support", value: vcSupport, inline: true },
+              { name: "Server Size", value: String(game.maxPlayers || "Unknown"), inline: true },
+              { name: "Supported Devices", value: supportedDevices, inline: true },
+              { name: "Created", value: toIsoTimestamp(game.created), inline: true },
+              { name: "Updated", value: toIsoTimestamp(game.updated), inline: true }
             )
         ]
       });
@@ -278,24 +412,156 @@ module.exports = {
     if (sub === "assetinfo") {
       await interaction.deferReply();
       const id = interaction.options.getString("id", true).trim();
-      const asset = await robloxApi.getAssetInfo(id);
+      const cacheKey = `assetinfo:${id}`;
+      let cached = await getCommandCache(cacheKey);
+      let fromCache = Boolean(cached);
+      if (!cached) {
+        const asset = await robloxApi.getAssetInfo(id);
+        const thumbnailUrl = asset ? await robloxApi.getAssetThumbnail(asset.AssetId || id) : null;
+        cached = {
+          source: "Roblox APIs",
+          fetchedAt: Date.now(),
+          asset,
+          thumbnailUrl
+        };
+        if (asset) {
+          await setCommandCache(cacheKey, cached, 5 * 60 * 1000);
+        }
+      }
+      const asset = cached.asset;
       if (!asset) {
         return interaction.editReply({
           embeds: [baseEmbed().setTitle("Not found").setDescription("Asset was not found.")]
         });
       }
+      if (!isMarketplaceAsset(asset)) {
+        return interaction.editReply({
+          embeds: [
+            baseEmbed()
+              .setTitle("Unsupported Asset Type")
+              .setDescription(
+                "This command is now filtered to marketplace wearable/clothing/accessory-style items. Use `/roblox iteminfo` for broader item lookups."
+              )
+          ]
+        });
+      }
+
+      const assetId = asset.AssetId || asset.id || id;
+      const isTradeable =
+        Boolean(asset.IsLimited) ||
+        Boolean(asset.IsLimitedUnique) ||
+        Boolean(asset.CollectiblesItemDetails?.IsLimited);
+      const price =
+        asset.PriceInRobux ?? asset.CollectiblesItemDetails?.CollectibleLowestResalePrice ?? "Offsale";
+      const creatorLabel = assetCreatorLabel(asset);
 
       await incrementRequests();
       return interaction.editReply({
         embeds: [
           baseEmbed()
-            .setTitle(asset.name || `Asset ${id}`)
-            .setURL(`https://www.roblox.com/catalog/${id}`)
-            .setDescription(asset.description || "No description.")
+            .setTitle(asset.Name || asset.name || `Asset ${id}`)
+            .setURL(`https://www.roblox.com/catalog/${assetId}`)
+            .setDescription(asset.Description || asset.description || "No description.")
+            .setFooter({ text: cacheAuthorText(cached.source || "Roblox APIs", fromCache, cached.fetchedAt) })
+            .setThumbnail(cached.thumbnailUrl || null)
             .addFields(
-              { name: "Asset ID", value: String(asset.id || id), inline: true },
-              { name: "Creator", value: asset.creator?.name || "Unknown", inline: true },
-              { name: "Price", value: String(asset.priceInRobux ?? "Offsale"), inline: true }
+              { name: "Asset ID", value: String(assetId), inline: true },
+              { name: "Type ID", value: String(asset.AssetTypeId ?? asset.assetTypeId ?? "Unknown"), inline: true },
+              { name: "Creator / Publisher", value: creatorLabel, inline: true },
+              { name: "Tradeable", value: isTradeable ? "Yes" : "No", inline: true },
+              { name: "Price", value: String(price), inline: true },
+              { name: "Created", value: toIsoTimestamp(asset.Created), inline: true },
+              { name: "Updated", value: toIsoTimestamp(asset.Updated), inline: true }
+            )
+        ]
+      });
+    }
+
+    if (sub === "iteminfo") {
+      await interaction.deferReply();
+      const query = interaction.options.getString("query", true).trim();
+      const cacheKey = `iteminfo:${query.toLowerCase()}`;
+      let cached = await getCommandCache(cacheKey);
+      let fromCache = Boolean(cached);
+
+      if (!cached) {
+        let asset = null;
+        let source = "Roblox APIs";
+
+        if (/^\d+$/.test(query)) {
+          asset = await robloxApi.getAssetInfo(query);
+        } else {
+          const results = await robloxApi.searchCatalogItemsByKeyword(query, 10);
+          const firstAsset = results.find((x) => String(x.itemType).toLowerCase() === "asset") || results[0];
+          if (firstAsset?.id) {
+            asset = await robloxApi.getAssetInfo(firstAsset.id);
+          }
+        }
+
+        if (!asset) {
+          return interaction.editReply({
+            embeds: [baseEmbed().setTitle("Not found").setDescription("No marketplace item matched that query.")]
+          });
+        }
+
+        const assetId = asset.AssetId || asset.id;
+        const [thumbnailUrl, rolimonsItemData] = await Promise.all([
+          robloxApi.getAssetThumbnail(assetId),
+          robloxApi.getRolimonsItemDetails().catch(() => null)
+        ]);
+        const rolimons = robloxApi.getRolimonsValueForAsset(rolimonsItemData, assetId);
+        if (rolimons) source = "Roblox APIs + Rolimons";
+
+        cached = {
+          source,
+          fetchedAt: Date.now(),
+          asset,
+          thumbnailUrl,
+          rolimons
+        };
+        await setCommandCache(cacheKey, cached, 5 * 60 * 1000);
+      }
+
+      const asset = cached.asset;
+      const assetId = asset.AssetId || asset.id;
+      const itemUrl = `https://www.roblox.com/catalog/${assetId}`;
+      const creatorLabel = assetCreatorLabel(asset);
+      const isTradeable =
+        Boolean(asset.IsLimited) ||
+        Boolean(asset.IsLimitedUnique) ||
+        Boolean(asset.CollectiblesItemDetails?.IsLimited);
+      const copies = asset.CollectiblesItemDetails?.TotalQuantity ?? asset.Remaining ?? null;
+      const price =
+        asset.PriceInRobux ??
+        asset.CollectiblesItemDetails?.CollectibleLowestResalePrice ??
+        asset.LowestPrice ??
+        "Offsale";
+      const rapLabel =
+        Number.isFinite(cached?.rolimons?.rap) ? formatCompactNumber(cached.rolimons.rap) : "Unavailable";
+      const valueLabel =
+        Number.isFinite(cached?.rolimons?.value) ? formatCompactNumber(cached.rolimons.value) : "Unavailable";
+
+      await incrementRequests();
+      return interaction.editReply({
+        embeds: [
+          baseEmbed()
+            .setTitle(asset.Name || asset.name || `Item ${assetId}`)
+            .setURL(itemUrl)
+            .setDescription((asset.Description || asset.description || "No description.").slice(0, 1000))
+            .setFooter({ text: cacheAuthorText(cached.source || "Roblox APIs", fromCache, cached.fetchedAt) })
+            .setThumbnail(cached.thumbnailUrl || null)
+            .addFields(
+              { name: "Item", value: `[Open in Marketplace](${itemUrl})`, inline: true },
+              { name: "Item ID", value: String(assetId), inline: true },
+              { name: "Type ID", value: String(asset.AssetTypeId ?? asset.assetTypeId ?? "Unknown"), inline: true },
+              { name: "Creator / Publisher", value: creatorLabel, inline: true },
+              { name: "Tradeable", value: isTradeable ? "Yes" : "No", inline: true },
+              { name: "Price", value: String(price), inline: true },
+              { name: "RAP", value: rapLabel, inline: true },
+              { name: "Rolimon Value", value: valueLabel, inline: true },
+              { name: "Copies", value: copies == null ? "Unknown" : formatCompactNumber(copies), inline: true },
+              { name: "Created", value: toIsoTimestamp(asset.Created), inline: true },
+              { name: "Updated", value: toIsoTimestamp(asset.Updated), inline: true }
             )
         ]
       });
