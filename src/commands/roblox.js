@@ -1,73 +1,106 @@
-const { SlashCommandBuilder } = require("discord.js");
+const { SlashCommandBuilder, MessageFlags } = require("discord.js");
 const { baseEmbed } = require("../constants/embed");
 const { canRunSearch } = require("../utils/cooldown");
 const RequestStat = require("../database/models/RequestStat");
 const robloxApi = require("../services/robloxApi");
 const robloxAggregator = require("../services/robloxAggregator");
-const bloxlinkApi = require("../services/bloxlinkApi");
+const { startSession } = require("../interactions/robloxUserSession");
+const { formatCompactNumber } = require("../utils/numberFormat");
 
 async function incrementRequests() {
-  await RequestStat.findOneAndUpdate({ key: "totalRequests" }, { $inc: { count: 1 } }, { upsert: true });
+  try {
+    await RequestStat.findOneAndUpdate({ key: "totalRequests" }, { $inc: { count: 1 } }, { upsert: true });
+  } catch {
+    // Mongo can be unavailable in local test mode; command flow should still succeed.
+  }
 }
 
-function listOrFallback(items, mapper, fallback = "None") {
-  if (!items?.length) return fallback;
-  return items.map(mapper).slice(0, 10).join("\n");
+/** Match the green status bar on status.roblox.com (Operational = 100 on Status.io). */
+const STATUS_COLOR_OK = 0x27ae60;
+const STATUS_COLOR_WARN = 0xf39c12;
+const STATUS_COLOR_BAD = 0xe74c3c;
+
+function statusEmbedColor(payload) {
+  const code = payload?.statusCode;
+  if (code === 100 || String(payload?.overall || "").toLowerCase() === "operational") {
+    return STATUS_COLOR_OK;
+  }
+  if (code === 300 || code === 200 || code === 250) return STATUS_COLOR_WARN;
+  if (typeof code === "number" && code >= 400) return STATUS_COLOR_BAD;
+  return STATUS_COLOR_WARN;
 }
 
-function buildUserEmbed(profile, sourceText) {
-  const { user, avatarUrl, usernameHistory, friendCounts, groups, places, socialLinks } = profile;
-  const embed = baseEmbed()
-    .setTitle(`${user.displayName} (@${user.name})`)
-    .setURL(`https://www.roblox.com/users/${user.id}/profile`)
-    .setDescription(
-      [
-        `**Account ID:** ${user.id}`,
-        `**Created:** ${new Date(user.created).toLocaleString()}`,
-        `**Source:** ${sourceText}`,
-        `**Status:** ${user.isBanned ? "Terminated / Banned" : "Active"}`
-      ].join("\n")
-    )
-    .addFields(
-      {
-        name: "Names",
-        value: [
-          `Current Username: \`${user.name}\``,
-          `Display Name: \`${user.displayName}\``,
-          `Previous: ${listOrFallback(usernameHistory, (x) => `\`${x.name}\``)}`
-        ].join("\n"),
-        inline: false
-      },
-      {
-        name: "Social Graph",
-        value: `Friends: **${friendCounts.friends}**\nFollowers: **${friendCounts.followers}**\nFollowing: **${friendCounts.following}**`,
-        inline: true
-      },
-      {
-        name: "Groups / Rank",
-        value: listOrFallback(
-          groups,
-          (g) => `[${g.group.name}](https://www.roblox.com/groups/${g.group.id}) - ${g.role.name}`
-        ),
-        inline: true
-      },
-      {
-        name: "Created Places",
-        value: listOrFallback(
-          places,
-          (p) => `[${p.name}](https://www.roblox.com/games/${p.rootPlace?.id || p.id})`
-        ),
-        inline: false
-      },
-      {
-        name: "Connected Social Links",
-        value: listOrFallback(socialLinks, (s) => `[${s.title || s.type}](${s.url})`),
-        inline: false
-      }
-    );
+function headlineFromOverall(overall) {
+  if (!overall) return "Roblox status";
+  if (String(overall).toLowerCase() === "operational") return "All Systems Operational";
+  return overall;
+}
 
-  if (avatarUrl) embed.setThumbnail(avatarUrl);
-  return embed;
+function statusEmojiFor(statusText) {
+  const t = String(statusText || "").toLowerCase();
+  // Down / outage (red circle)
+  if (
+    t.includes("major outage") ||
+    t.includes("outage") ||
+    t.includes("unavailable") ||
+    t.includes("offline") ||
+    /\bdown\b/.test(t)
+  ) {
+    return "🔴";
+  }
+  // Degraded / partial / maintenance (warning)
+  if (
+    t.includes("degraded") ||
+    t.includes("partial") ||
+    t.includes("limited") ||
+    t.includes("maintenance") ||
+    t.includes("performance")
+  ) {
+    return "⚠️";
+  }
+  // Up / healthy (check mark)
+  if (t.includes("operational") || t.includes("healthy") || /\bup\b/.test(t) || t === "ok") {
+    return "✅";
+  }
+  return "⚪";
+}
+
+function formatCategoryLines(items) {
+  const max = Math.max(8, ...items.map((i) => i.name.length));
+  return items.map((i) => `${i.name.padEnd(max)}  ${statusEmojiFor(i.status)} ${i.status}`);
+}
+
+function monospaceFieldValue(lines) {
+  const body = lines.join("\n");
+  let wrapped = `\`\`\`\n${body}\n\`\`\``;
+  if (wrapped.length <= 1024) return wrapped;
+  let acc = [];
+  for (const line of lines) {
+    const next = `\`\`\`\n${[...acc, line].join("\n")}\n\`\`\``;
+    if (next.length > 1024) break;
+    acc.push(line);
+  }
+  if (!acc.length) acc = [lines[0].slice(0, Math.min(lines[0].length, 980))];
+  return `\`\`\`\n${acc.join("\n")}\n…\n\`\`\``;
+}
+
+/** When only flat `components` exist (legacy API), rebuild User / Player / Creator groups. */
+function categoriesFromFlatComponents(components) {
+  const map = new Map();
+  const sep = " · ";
+  for (const c of components || []) {
+    const idx = c.name.indexOf(sep);
+    if (idx === -1) {
+      if (!map.has("Other")) map.set("Other", []);
+      map.get("Other").push({ name: c.name, status: c.status });
+    } else {
+      const cat = c.name.slice(0, idx);
+      const name = c.name.slice(idx + sep.length);
+      if (!map.has(cat)) map.set(cat, []);
+      map.get(cat).push({ name, status: c.status });
+    }
+  }
+  return [...map.entries()].map(([name, items]) => ({ name, items }));
 }
 
 module.exports = {
@@ -84,14 +117,6 @@ module.exports = {
             .setDescription("Roblox username or user ID")
             .setRequired(true)
             .setAutocomplete(true)
-        )
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName("userfromdiscord")
-        .setDescription("Search by Discord user and linked Roblox account")
-        .addStringOption((opt) =>
-          opt.setName("discord").setDescription("Discord username or ID / snowflake").setRequired(true)
         )
     )
     .addSubcommand((sub) => sub.setName("status").setDescription("Get Roblox platform status"))
@@ -117,7 +142,7 @@ module.exports = {
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
 
-    if (sub === "userfromroblox" || sub === "userfromdiscord") {
+    if (sub === "userfromroblox") {
       const check = canRunSearch(interaction.user.id);
       if (!check.ok) {
         return interaction.reply({
@@ -126,7 +151,7 @@ module.exports = {
               .setTitle("Cooldown")
               .setDescription(`Please wait **${Math.ceil(check.remainingMs / 1000)}s** before searching again.`)
           ],
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
     }
@@ -141,36 +166,8 @@ module.exports = {
         });
       }
       await incrementRequests();
-      return interaction.editReply({ embeds: [buildUserEmbed(profile, "Roblox query")] });
-    }
-
-    if (sub === "userfromdiscord") {
-      await interaction.deferReply();
-      const discordInput = interaction.options.getString("discord", true).trim();
-      const extracted = discordInput.replace(/[<@!>]/g, "");
-      const linkedRobloxId = await bloxlinkApi.getLinkedRobloxFromDiscord(extracted);
-
-      if (!linkedRobloxId) {
-        return interaction.editReply({
-          embeds: [
-            baseEmbed()
-              .setTitle("No linked Roblox account found")
-              .setDescription("Could not resolve this Discord account through Bloxlink.")
-          ]
-        });
-      }
-
-      const profile = await robloxAggregator.getFullUserProfile(linkedRobloxId);
-      if (!profile) {
-        return interaction.editReply({
-          embeds: [baseEmbed().setTitle("Not found").setDescription("Linked Roblox account could not be resolved.")]
-        });
-      }
-
-      await incrementRequests();
-      return interaction.editReply({
-        embeds: [buildUserEmbed(profile, `Discord lookup (${discordInput})`)]
-      });
+      await startSession(interaction, profile, "Roblox query");
+      return;
     }
 
     if (sub === "status") {
@@ -182,20 +179,46 @@ module.exports = {
         });
       }
 
-      const value = (status?.components || [])
-        .slice(0, 12)
-        .map((c) => `- **${c.name}**: ${c.status}`)
-        .join("\n");
+      let updatedLine = "";
+      if (status?.updated) {
+        const t = Date.parse(status.updated);
+        updatedLine = Number.isFinite(t)
+          ? `Updated <t:${Math.floor(t / 1000)}:R>`
+          : `Updated ${status.updated}`;
+      }
+
+      const categories =
+        status.categories?.length ? status.categories : categoriesFromFlatComponents(status.components || []);
+
+      const embed = baseEmbed()
+        .setColor(statusEmbedColor(status))
+        .setTitle("Roblox Status")
+        .setURL("https://status.roblox.com");
+
+      if (categories.length) {
+        const headline = headlineFromOverall(status.overall);
+        embed.setDescription(
+          [`**${headline}**`, updatedLine ? `_${updatedLine}_` : null].filter(Boolean).join("\n")
+        );
+        for (const cat of categories.slice(0, 25)) {
+          if (!cat.items?.length) continue;
+          embed.addFields({
+            name: `▾ ${cat.name}`,
+            value: monospaceFieldValue(formatCategoryLines(cat.items)),
+            inline: false
+          });
+        }
+      } else {
+        const lines = [
+          status?.overall ? `**${headlineFromOverall(status.overall)}**` : null,
+          updatedLine ? `_${updatedLine}_` : null,
+          Number.isFinite(status?.incidentCount) ? `Incidents on page: **${status.incidentCount}**` : null
+        ].filter(Boolean);
+        embed.setDescription(lines.join("\n") || "No status data available.");
+      }
 
       await incrementRequests();
-      return interaction.editReply({
-        embeds: [
-          baseEmbed()
-            .setTitle("Roblox Status")
-            .setURL("https://status.roblox.com")
-            .setDescription(value || "No component data available.")
-        ]
-      });
+      return interaction.editReply({ embeds: [embed] });
     }
 
     if (sub === "groupinfo") {
@@ -218,7 +241,7 @@ module.exports = {
             .addFields(
               { name: "Group ID", value: String(group.id), inline: true },
               { name: "Owner", value: group.owner?.username || "Unknown", inline: true },
-              { name: "Members", value: String(group.memberCount || 0), inline: true }
+              { name: "Members", value: formatCompactNumber(group.memberCount || 0), inline: true }
             )
         ]
       });
@@ -246,7 +269,7 @@ module.exports = {
             .addFields(
               { name: "Universe ID", value: String(universeId || "Unknown"), inline: true },
               { name: "Creator", value: game.creatorName || game.creator?.name || "Unknown", inline: true },
-              { name: "Visits", value: String(game.visits || game.placeVisits || 0), inline: true }
+              { name: "Visits", value: formatCompactNumber(game.visits || game.placeVisits || 0), inline: true }
             )
         ]
       });
@@ -280,7 +303,7 @@ module.exports = {
 
     return interaction.reply({
       embeds: [baseEmbed().setTitle("Unknown subcommand").setDescription("This subcommand is not implemented.")],
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 };

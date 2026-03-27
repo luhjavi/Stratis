@@ -13,11 +13,16 @@ module.exports = {
   roblox: {
     cookie: process.env.ROBLOX_COOKIE || null
   },
-  bloxlink: {
-    token: process.env.BLOXLINK_API_TOKEN || null
-  },
   bot: {
     searchCooldownMs: 15000,
     embedColor: 0x111318
+  },
+  emojis: {
+    premium: process.env.EMOJI_PREMIUM || "",
+    friendshipBadge: process.env.EMOJI_FRIENDSHIP_BADGE || "",
+    online: process.env.EMOJI_ONLINE || "🟢",
+    offline: process.env.EMOJI_OFFLINE || "⚫",
+    studio: process.env.EMOJI_STUDIO || "🛠️",
+    playing: process.env.EMOJI_PLAYING || "🎮"
   }
 };

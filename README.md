@@ -5,7 +5,6 @@ Search for Roblox Profiles and connected accounts.
 
 - Slash commands with category roots:
   - `/roblox userfromroblox <query>`
-  - `/roblox userfromdiscord <query>`
   - `/roblox status`
   - `/roblox groupinfo <query>`
   - `/roblox gameinfo <query>`
@@ -19,6 +18,9 @@ Search for Roblox Profiles and connected accounts.
 - MongoDB persistence for request count.
 - Sharding manager support for scale.
 - Optional Bloxlink API integration for Discord -> Roblox linking.
+- Interactive user result panel with view switcher and navigation controls.
+- Panel auto-disables after 30 seconds of idle time.
+- Profile cache with TTL and fast avatar thumbnail refresh caching.
 
 ## Setup
 
@@ -53,3 +55,6 @@ npm run start:single
 - For free hosting, use local MongoDB Community Edition or MongoDB Atlas free tier.
 - Some Roblox endpoints may change or rate limit; service functions are organized to be easy to extend.
 - "Terminated" accounts are represented from Roblox account data where available (for example, banned state).
+- Command sync behavior on startup:
+  - `npm start`: syncs slash commands to all guilds the bot is currently in.
+  - `npm run start:single`: syncs slash commands only to `DISCORD_GUILD_ID` for testing.

@@ -10,6 +10,7 @@ const { connectMongo } = require("./database/connect");
 const RequestStat = require("./database/models/RequestStat");
 const { handleInteraction } = require("./interactions/handleInteraction");
 const logger = require("./utils/logger");
+const { syncCommands } = require("./services/commandSync");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -19,8 +20,12 @@ const client = new Client({
 client.commands = new Collection();
 
 async function getRequestCount() {
-  const doc = await RequestStat.findOne({ key: "totalRequests" });
-  return doc?.count || 0;
+  try {
+    const doc = await RequestStat.findOne({ key: "totalRequests" });
+    return doc?.count || 0;
+  } catch {
+    return 0;
+  }
 }
 
 function getUserCountSafe() {
@@ -30,7 +35,6 @@ function getUserCountSafe() {
 async function rotatePresence() {
   const cycles = [
     async () => `Serving ${client.guilds.cache.size} servers`,
-    async () => `Watching ${getUserCountSafe()} users`,
     async () => `Handled ${await getRequestCount()} requests`
   ];
   let index = 0;
@@ -49,8 +53,10 @@ async function rotatePresence() {
   }, 15000);
 }
 
-client.once("ready", async () => {
+client.once("clientReady", async () => {
   logger.info(`Logged in as ${client.user.tag}`);
+  const singleGuildOnly = process.argv.includes("--single-guild");
+  await syncCommands(client, { singleGuildOnly });
   await rotatePresence();
 });
 
@@ -58,7 +64,12 @@ client.on("interactionCreate", handleInteraction);
 
 async function bootstrap() {
   if (!config.discord.token) throw new Error("Missing DISCORD_TOKEN in environment.");
-  await connectMongo();
+  try {
+    await connectMongo();
+    logger.info("MongoDB connected");
+  } catch (err) {
+    logger.warn("MongoDB unavailable, running without persistence", err?.message || err);
+  }
   await client.login(config.discord.token);
 }
 
