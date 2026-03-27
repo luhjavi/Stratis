@@ -511,7 +511,7 @@ module.exports = {
       if (!image?.buffer) {
         return interaction.editReply({
           content:
-            "Template image could not be fetched from Roblox asset delivery. Make sure your ROBLOX_COOKIE is valid and has access."
+            "Could not download the classic clothing template image. Set a valid `ROBLOX_COOKIE` in `.env` (logged-in account) so Roblox asset delivery can return the PNG. Without it, template downloads usually fail with 401."
         });
       }
 

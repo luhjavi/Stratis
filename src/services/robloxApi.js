@@ -2,9 +2,12 @@ const config = require("../config");
 
 async function robloxFetch(url, options = {}) {
   const headers = {
-    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (compatible; StratisBot/1.0; +https://github.com)",
     ...(options.headers || {})
   };
+  if (options.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
 
   if (config.roblox.cookie) {
     headers.Cookie = `.ROBLOSECURITY=${config.roblox.cookie}`;
@@ -418,18 +421,43 @@ async function getAssetInfo(assetId) {
   return response.json();
 }
 
-function extractTemplateAssetId(text) {
+function extractTemplateAssetIds(text) {
   const raw = String(text || "");
-  const patterns = [
-    /asset\/\?id=(\d+)/i,
-    /assetId=(\d+)/i,
-    /rbxassetid:\/\/(\d+)/i
-  ];
-  for (const p of patterns) {
-    const m = raw.match(p);
-    if (m?.[1]) return Number(m[1]);
-  }
+  const found = new Set();
+  const addMatches = (re) => {
+    for (const m of raw.matchAll(re)) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > 0) found.add(n);
+    }
+  };
+  addMatches(/rbxassetid:\/\/(\d+)/gi);
+  addMatches(/asset\/\?id=(\d+)/gi);
+  addMatches(/assetId=(\d+)/gi);
+  addMatches(/<string name="ShirtTemplate">rbxassetid:\/\/(\d+)<\/string>/gi);
+  addMatches(/<string name="PantsTemplate">rbxassetid:\/\/(\d+)<\/string>/gi);
+  addMatches(/<string name="ShirtGraphic">rbxassetid:\/\/(\d+)<\/string>/gi);
+  return [...found];
+}
+
+function pickTemplateIdFromCandidates(clothingAssetId, candidates) {
+  const self = Number(clothingAssetId);
+  const nums = candidates.filter((n) => Number.isFinite(n) && n > 0);
+  if (!nums.length) return null;
+  const other = nums.find((n) => n !== self);
+  return other ?? nums[0];
+}
+
+function detectImageFormat(buffer) {
+  if (!buffer?.length) return null;
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return "png";
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "jpg";
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) return "gif";
   return null;
+}
+
+function isLikelyPlaceholderPng(buffer) {
+  if (!buffer?.length || detectImageFormat(buffer) !== "png") return true;
+  return buffer.length < 4000;
 }
 
 async function getClassicClothingTemplateId(clothingAssetId) {
@@ -446,27 +474,60 @@ async function getClassicClothingTemplateId(clothingAssetId) {
     if (!response?.ok) continue;
     const arr = await response.arrayBuffer().catch(() => null);
     if (!arr) continue;
-    const text = Buffer.from(arr).toString("utf8");
-    const templateId = extractTemplateAssetId(text);
-    if (templateId) return templateId;
+    const buf = Buffer.from(arr);
+    let text = buf.toString("utf8");
+    if (!text.includes("rbxassetid") && buf.length > 4) {
+      const asLatin = buf.toString("latin1");
+      if (asLatin.includes("rbxassetid")) text = asLatin;
+    }
+    const candidates = extractTemplateAssetIds(text);
+    const picked = pickTemplateIdFromCandidates(id, candidates);
+    if (picked) return picked;
   }
   return null;
+}
+
+async function fetchImageBufferFromThumbnail(assetId) {
+  const response = await robloxFetch(
+    `https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png&isCircular=false`
+  ).catch(() => null);
+  if (!response?.ok) return null;
+  const json = await response.json().catch(() => null);
+  const imageUrl = json?.data?.[0]?.imageUrl;
+  if (!imageUrl) return null;
+  const imgRes = await fetch(imageUrl).catch(() => null);
+  if (!imgRes?.ok) return null;
+  const arr = await imgRes.arrayBuffer().catch(() => null);
+  if (!arr) return null;
+  const buffer = Buffer.from(arr);
+  if (isLikelyPlaceholderPng(buffer)) return null;
+  const fmt = detectImageFormat(buffer);
+  if (!fmt) return null;
+  return { buffer, extension: fmt };
 }
 
 async function getAssetImageBuffer(assetId) {
   const id = Number(assetId);
   if (!Number.isFinite(id)) return null;
 
-  // For classic template images, use asset delivery directly.
-  // Thumbnail fallback is intentionally avoided to prevent generic placeholder icons.
   const direct = await robloxFetch(`https://assetdelivery.roblox.com/v1/asset/?id=${id}`).catch(() => null);
-  if (!direct?.ok) return null;
-  const contentType = String(direct.headers.get("content-type") || "").toLowerCase();
-  if (!contentType.startsWith("image/")) return null;
-  const ext = contentType.includes("png") ? "png" : contentType.includes("jpeg") ? "jpg" : "png";
-  const arr = await direct.arrayBuffer().catch(() => null);
-  if (!arr) return null;
-  return { buffer: Buffer.from(arr), extension: ext };
+  if (direct?.ok) {
+    const arr = await direct.arrayBuffer().catch(() => null);
+    if (arr) {
+      const buffer = Buffer.from(arr);
+      const contentType = String(direct.headers.get("content-type") || "").toLowerCase();
+      const fromMagic = detectImageFormat(buffer);
+      if (fromMagic) {
+        return { buffer, extension: fromMagic };
+      }
+      if (contentType.startsWith("image/")) {
+        const ext = contentType.includes("jpeg") ? "jpg" : contentType.includes("gif") ? "gif" : "png";
+        return { buffer, extension: ext };
+      }
+    }
+  }
+
+  return fetchImageBufferFromThumbnail(id);
 }
 
 async function getAssetThumbnail(assetId) {
