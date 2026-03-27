@@ -1,6 +1,5 @@
 # Stratis
-Search for Roblox Profiles and connected accounts.
-
+Replacement Bot for axotl#0066, now stratis#0066
 ## Features included now
 
 - Slash commands with category roots:
