@@ -65,7 +65,7 @@ npm run start:single
 
 - For free hosting, use local MongoDB Community Edition or MongoDB Atlas free tier.
 - Some Roblox endpoints may change or rate limit; service functions are organized to be easy to extend.
-- "Terminated" accounts are represented from Roblox account data where available (for example, banned state).
+
 - Command sync behavior on startup:
   - `npm start`: syncs slash commands to all guilds the bot is currently in.
   - `npm run start:single`: syncs slash commands only to `DISCORD_GUILD_ID` for testing.
